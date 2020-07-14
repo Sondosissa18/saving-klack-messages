@@ -1,9 +1,29 @@
 const express = require("express");
 const querystring = require("querystring");
 const port = 3000;
-const Message = require("./models/Message");
-const { Z_ASCII } = require("zlib");
 const app = express();
+const MongoClient = require("mongodb").MongoClient;
+const assert = require("assert");
+const mongoose = require("mongoose");
+
+const url = "mongodb://localhost:27017/klack";
+mongoose.connect(url, { useNewUrlParser: true });
+const db = mongoose.connection;
+db.on("error", console.error.bind(console, "connection error:"));
+db.once("open", function () {});
+
+// List of all messages
+// let messages = [];
+const messagesSchema = new mongoose.Schema({
+  sender: String,
+  message: String,
+  timestamp: Number,
+});
+
+// Track last active times for each sender
+const messageModel = mongoose.model("message", messagesSchema);
+
+let users = {};
 
 app.use(express.static("./public"));
 app.use(express.json());
@@ -23,58 +43,55 @@ function userSortFn(a, b) {
   return 0;
 }
 
-app.get("/messages", (request, response) => {
-  // get the current time
-  const now = Date.now();
+app.get("/messages", async (request, response) => {
+  try {
+    // get the current time
+    const now = Date.now();
+    const messages = await messageModel
+      .find({
+        name: request.query.for,
+      })
+      .sort({ timestamp: -1 })
+      .limit(40);
 
-  // consider users active if they have connected (GET or POST) in last 15 seconds
-  const requireActiveSince = now - 15 * 1000;
+    // consider users active if they have connected (GET or POST) in last 15 seconds
+    const requireActiveSince = now - 15 * 1000;
 
-  // create a new list of users with a flag indicating whether they have been active recently
-  usersSimple = Object.keys(users).map((x) => ({
-    name: x,
-    active: users[x] > requireActiveSince,
-  }));
+    // create a new list of users with a flag indicating whether they have been active recently
+    usersSimple = Object.keys(users).map((x) => ({
+      name: x,
+      active: users[x] > requireActiveSince,
+    }));
 
-  //usrersSimple = usersSimple.reverse();
-  // console.log(usersSimple, messages, "userSimple");
-  // sort the list of users alphabetically by name
-  usersSimple.sort(userSortFn);
-  usersSimple.filter((a) => a.name !== request.query.for);
+    // sort the list of users alphabetically by name
+    usersSimple.sort(userSortFn);
+    usersSimple.filter((a) => a.name !== request.query.for);
 
-  // update the requesting user's last access time
-  messages[request.query.for] = now;
+    // update the requesting user's last access time
+    users[request.query.for] = now;
 
-  //User.finOne;
-  // send the latest 40 messages and the full user list, annotated with active flags
-
-  response.send({ messages: chatMessages.slice(-40), users: usersSimple });
+    // send the latest 40 messages and the full user list, annotated with active flags
+    response.send({ messages: messages, users: usersSimple });
+  } catch (err) {
+    res.status(500).json(err);
+  }
 });
 
-app.post("/messages", (request, response) => {
+app.post("/messages", async (request, response) => {
   // add a timestamp to each incoming message.
-  const body = request.body;
-
-  if (request.body === undefined) {
-    return res.status(400).json({ error: "content missing" });
+  const timestamp = Date.now();
+  request.body.timestamp = timestamp;
+  try {
+    await messageModel.create(request.body);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json(err);
   }
 
-  const timestamp = Date.now();
-  console.log(request.body);
-  request.body.timestamp = timestamp;
-
   // update the posting user's last access timestamp (so we know they are active)
+  users[request.body.sender] = timestamp;
 
-  const user = new Message({
-    sender: body.sender,
-    message: body.message,
-    timestamp: body.timestamp,
-  });
-
-  user.save().then((user) => {
-    console.log("Data Saved");
-  });
-
+  // Send back the successful response.
   response.status(201);
   response.send(request.body);
 });
